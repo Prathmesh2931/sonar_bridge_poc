@@ -1,0 +1,24 @@
+[package]
+name    = "sonar_bridge_poc"
+version = "0.1.0"
+edition = "2021"
+
+# Build both a C-compatible static library (for C++ FFI) AND a runnable binary
+[lib]
+name       = "sonar_engine"
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[[bin]]
+name = "sonar_bridge_poc"
+path = "src/main.rs"
+
+[dependencies]
+wgpu    = "0.20"
+pollster = "0.3"         # block_on helper — no async runtime needed
+bytemuck = { version = "1.14", features = ["derive"] }
+
+[build-dependencies]
+# Nothing needed — shader is loaded at runtime as a plain string
+
+[profile.release]
+opt-level = 3
