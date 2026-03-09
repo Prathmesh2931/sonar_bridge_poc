@@ -1,38 +1,32 @@
 // lib.rs — Sonar compute engine with C-compatible FFI
-//
-// Architecture:
-//   C++ (Gazebo plugin)
-//     └─ calls process_sonar_data()  [extern "C"]
-//          └─ Rust initialises wgpu (Vulkan / Metal / DX12 / WebGPU)
-//               └─ uploads ray buffer → GPU compute shader
-//                    └─ downloads result → writes back into the same C pointer
-
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
-// ── Uniform struct mirroring the WGSL SonarParams ────────────────────────────
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct SonarParams {
-    noise_scale: f32,
-    ray_count:   u32,
-    _pad0:       u32,
-    _pad1:       u32,
+    origin_x:     f32,
+    origin_y:     f32,
+    origin_z:     f32,
+    max_range:    f32,
+    step_size:    f32,
+    num_rays:     u32,
+    floor_height: f32,
+    _pad:         f32,
 }
 
-// ── Internal async implementation ─────────────────────────────────────────────
-async fn run_compute(data: &mut [f32], noise_scale: f32) -> Result<(), String> {
-    // 1. Initialise wgpu — picks the best available backend automatically
-    //    (Vulkan on Linux/Windows, Metal on macOS, DX12 fallback on Windows)
+// ── Internal async GPU pipeline ───
+async fn run_compute(data: &mut [f32]) -> Result<(), String> {
+
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::all(), // ← vendor-agnostic: Intel, NVIDIA, AMD, etc.
+        backends: wgpu::Backends::all(),
         ..Default::default()
     });
 
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
             power_preference:       wgpu::PowerPreference::HighPerformance,
-            compatible_surface:     None, // headless — no window needed
+            compatible_surface:     None,
             force_fallback_adapter: false,
         })
         .await
@@ -49,17 +43,17 @@ async fn run_compute(data: &mut [f32], noise_scale: f32) -> Result<(), String> {
         .await
         .map_err(|e| e.to_string())?;
 
-    // 2. Upload ray-distance data to GPU
-    let ray_count   = data.len() as u32;
-    let byte_len    = (data.len() * std::mem::size_of::<f32>()) as u64;
+    let ray_count = data.len() as u32;
+    let byte_len  = (data.len() * std::mem::size_of::<f32>()) as u64;
 
+    // Upload ray buffer to GPU
     let storage_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label:    Some("ray_distances"),
         contents: bytemuck::cast_slice(data),
         usage:    wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
     });
 
-    // Read-back (staging) buffer — GPU→CPU copy target
+    // Staging buffer for GPU → CPU readback
     let readback_buf = device.create_buffer(&wgpu::BufferDescriptor {
         label:              Some("readback"),
         size:               byte_len,
@@ -67,12 +61,16 @@ async fn run_compute(data: &mut [f32], noise_scale: f32) -> Result<(), String> {
         mapped_at_creation: false,
     });
 
-    // 3. Upload uniform params
+    // Upload sonar physics params
     let params = SonarParams {
-        noise_scale,
-        ray_count,
-        _pad0: 0,
-        _pad1: 0,
+        origin_x:     0.0,   // sonar at world origin
+        origin_y:     5.0,   // 5 metres above floor
+        origin_z:     0.0,
+        max_range:    50.0,  // 50 metre sonar range
+        step_size:    0.05,  // 5 cm per ray step
+        num_rays:     ray_count,
+        floor_height: 0.0,   // floor at y=0
+        _pad:         0.0,
     };
 
     let uniform_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -81,14 +79,14 @@ async fn run_compute(data: &mut [f32], noise_scale: f32) -> Result<(), String> {
         usage:    wgpu::BufferUsages::UNIFORM,
     });
 
-    // 4. Compile WGSL shader (embedded at compile time — no runtime file I/O)
+    // Compile shader
     let shader_src = include_str!("../shaders/sonar.wgsl");
     let shader     = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label:  Some("sonar_shader"),
         source: wgpu::ShaderSource::Wgsl(shader_src.into()),
     });
 
-    // 5. Build bind-group layout + pipeline
+    // Bind group layout
     let bind_group_layout =
         device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label:   Some("sonar_bgl"),
@@ -96,22 +94,22 @@ async fn run_compute(data: &mut [f32], noise_scale: f32) -> Result<(), String> {
                 wgpu::BindGroupLayoutEntry {
                     binding:    0,
                     visibility: wgpu::ShaderStages::COMPUTE,
-                    ty:         wgpu::BindingType::Buffer {
-                        ty:                 wgpu::BufferBindingType::Storage { read_only: false },
-                        has_dynamic_offset: false,
-                        min_binding_size:   None,
-                    },
-                    count:      None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding:    1,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty:         wgpu::BindingType::Buffer {
+                    ty: wgpu::BindingType::Buffer {
                         ty:                 wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
                         min_binding_size:   None,
                     },
-                    count:      None,
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding:    1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty:                 wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size:   None,
+                    },
+                    count: None,
                 },
             ],
         });
@@ -124,10 +122,10 @@ async fn run_compute(data: &mut [f32], noise_scale: f32) -> Result<(), String> {
 
     let compute_pipeline =
         device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label:       Some("sonar_pipeline"),
-            layout:      Some(&pipeline_layout),
-            module:      &shader,
-            entry_point: "main",
+            label:               Some("sonar_pipeline"),
+            layout:              Some(&pipeline_layout),
+            module:              &shader,
+            entry_point:         "main",
             compilation_options: Default::default(),
         });
 
@@ -137,36 +135,34 @@ async fn run_compute(data: &mut [f32], noise_scale: f32) -> Result<(), String> {
         entries: &[
             wgpu::BindGroupEntry {
                 binding:  0,
-                resource: storage_buf.as_entire_binding(),
+                resource: uniform_buf.as_entire_binding(),
             },
             wgpu::BindGroupEntry {
                 binding:  1,
-                resource: uniform_buf.as_entire_binding(),
+                resource: storage_buf.as_entire_binding(),
             },
         ],
     });
 
-    // 6. Encode & dispatch
+    // Encode + dispatch
     let mut encoder =
         device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("enc") });
 
     {
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label:              Some("sonar_pass"),
-            timestamp_writes:   None,
+            label:            Some("sonar_pass"),
+            timestamp_writes: None,
         });
         pass.set_pipeline(&compute_pipeline);
         pass.set_bind_group(0, &bind_group, &[]);
-        // workgroup_size = 64 (matches WGSL), ceil(ray_count / 64) groups
         let groups = (ray_count + 63) / 64;
         pass.dispatch_workgroups(groups, 1, 1);
     }
 
-    // 7. Copy GPU storage → staging buffer
     encoder.copy_buffer_to_buffer(&storage_buf, 0, &readback_buf, 0, byte_len);
     queue.submit(std::iter::once(encoder.finish()));
 
-    // 8. Map staging buffer back to CPU and write into caller's slice
+    // Read back results to CPU
     let slice = readback_buf.slice(..);
     let (tx, rx) = std::sync::mpsc::channel();
     slice.map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
@@ -181,30 +177,24 @@ async fn run_compute(data: &mut [f32], noise_scale: f32) -> Result<(), String> {
 }
 
 // ── Public Rust API ───────────────────────────────────────────────────────────
-pub fn process_rays(data: &mut [f32], noise_scale: f32) {
-    pollster::block_on(run_compute(data, noise_scale))
-        .expect("wgpu compute failed");
+pub fn process_rays(data: &mut [f32]) {
+    pollster::block_on(run_compute(data)).expect("wgpu compute failed");
 }
 
 // ── C FFI surface (called from C++ / Gazebo plugin) ──────────────────────────
-/// # Safety
-/// `data` must point to a valid array of `len` f32 values.
 #[no_mangle]
 pub unsafe extern "C" fn process_sonar_data(data: *mut f32, len: usize) {
     assert!(!data.is_null(), "process_sonar_data: null pointer");
     let slice = unsafe { std::slice::from_raw_parts_mut(data, len) };
-    process_rays(slice, 0.05); // 5 cm acoustic noise — tunable
+    process_rays(slice);
 }
 
-/// Returns the wgpu backend name as a null-terminated C string.
-/// The caller must NOT free this pointer (it points to a static string).
 #[no_mangle]
 pub extern "C" fn sonar_backend_name() -> *const std::ffi::c_char {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::all(),
         ..Default::default()
     });
-    // Best-effort sync adapter probe
     let name = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference:       wgpu::PowerPreference::HighPerformance,
         compatible_surface:     None,
@@ -213,7 +203,6 @@ pub extern "C" fn sonar_backend_name() -> *const std::ffi::c_char {
     .map(|a| a.get_info().name)
     .unwrap_or_else(|| "unknown".to_string());
 
-    // Leak is intentional — static lifetime for the C caller
     let cstr = std::ffi::CString::new(name).unwrap();
     cstr.into_raw()
 }
