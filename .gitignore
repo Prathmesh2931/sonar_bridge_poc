@@ -1,0 +1,6 @@
+/target
+sonar_host
+gazebo_plugin_test
+cpp_host/run_intel.sh
+*.o
+*.d
