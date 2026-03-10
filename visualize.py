@@ -46,11 +46,11 @@ def simulate_ray_distances(num_rays=256):
                 break
     return distances, np.degrees(angles)
 
-# ── Figure with 2 plots ───────────────────────────────────────────────────────
+#  Figure with 2 plots 
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
 fig.patch.set_facecolor('#0a0a0a')
 
-# ── Plot 1: Sonar heatmap ─────────────────────────────────────────────────────
+#  Plot 1: Sonar heatmap 
 distances, angles = simulate_ray_distances(256)
 intensity = 1.0 / (distances + 0.1)  # closer = brighter
 intensity = intensity / intensity.max()
@@ -66,7 +66,7 @@ for spine in ax1.spines.values():
     spine.set_edgecolor('#444')
 ax1.set_facecolor('#0a0a0a')
 
-# ── Plot 2: Benchmark chart ───────────────────────────────────────────────────
+#  Plot 2: Benchmark chart 
 colors = ['#00ff88' if ms < 1.0 else '#ffaa00' for ms in dispatch_ms]
 bars   = ax2.bar([str(r) for r in ray_counts], dispatch_ms, color=colors)
 ax2.axhline(y=16.6, color='red', linestyle='--', alpha=0.7, label='60Hz budget (16.6ms)')
