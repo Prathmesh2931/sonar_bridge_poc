@@ -88,8 +88,14 @@ sonar_bridge_poc/
 
 ## Build and Run
 
-**Prerequisites:** Rust toolchain, g++ C++17, Vulkan drivers
+### One-time setup (Ubuntu)
+
 ```bash
+sudo apt install build-essential libvulkan1 vulkan-tools
+curl https://sh.rustup.rs -sSf | sh
+source ~/.cargo/env
+
+Run the demo:
 # Full build + all tests in one command
 bash build_and_run.sh
 
