@@ -8,6 +8,16 @@ implementation before writing a GSoC proposal.
 
 ---
 
+## Key Highlights
+
+- **Vendor agnostic:** zero CUDA dependency — same binary targets Vulkan (Linux), Metal (macOS), DX12 (Windows)
+- **Simulator ready:** FFI lifecycle mirrors official `gz::sensors::GpuLidarSensor` (`Load` → `Update` → `Unload`)
+- **Physics grounded:** development guided by NPS multibeam sonar `sonar_calculation_cuda.cu` reference
+- **Zero allocation per frame:** GPU buffers pre-allocated at `Load()`, only `queue.write_buffer()` called per `Update()`
+- **0.09ms steady-state dispatch** at 1024 rays — under 1% of Gazebo's 16.6ms 60Hz frame budget
+
+---
+
 ## What This Validates
 
 `sonar_bridge_poc` tests the core architectural bet of the GSoC project: that a
@@ -29,6 +39,24 @@ per frame**.
 
 On an RTX 3050 at 1024 rays, steady-state dispatch cost is **0.09ms**, well
 within the 16.6ms Gazebo 60Hz budget.
+
+---
+
+## Architectural Alignment with Gazebo Sensors
+
+The `sonar_bridge_poc` lifecycle is directly modelled on
+`gz::sensors::GpuLidarSensor` from `gazebosim/gz-sensors`:
+
+| Gazebo GpuLidarSensor | sonar_bridge_poc |
+|---|---|
+| `Load()` — allocates `laserBuffer`, sets up rendering | `sonar_engine_init()` — allocates GPU buffers, compiles shader |
+| `Update()` → `Render()` → `ApplyNoise()` → `Publish()` | `sonar_engine_update()` — dispatch → readback → caller publishes |
+| `OnNewLidarFrame()` receives `const float* _scan` | FFI accepts `float* data, size_t len` — same pattern |
+| Buffer checked for null, reused if exists | `MAX_RAYS` buffer allocated once, reused every frame |
+
+The key difference: `GpuLidarSensor` copies rendering output directly.
+The SONAR plugin needs an extra compute pass between render and publish —
+acoustic physics processing — which is what the wgpu pipeline provides.
 
 ---
 
@@ -55,15 +83,13 @@ Intel / NVIDIA / AMD — zero code changes between vendors
 
 ## Hardware Compatibility
 
-Because the engine uses `wgpu::Backends::all()`, the **same binary** targets:
-
 | Platform | Backend | Status |
 |----------|---------|--------|
-| Linux    | Vulkan  | ✅ verified (RTX 3050, Intel RPL-P) |
+| Linux    | Vulkan  | ✅ verified — RTX 3050 + Intel RPL-P |
 | macOS    | Metal   | ✅ wgpu-supported, untested on this machine |
 | Windows  | DX12    | ✅ wgpu-supported, untested on this machine |
 
-No `#ifdef`, no vendor SDK, no separate builds.
+Enabled by `wgpu::Backends::all()` — no `#ifdef`, no vendor SDK.
 
 ---
 
@@ -88,20 +114,16 @@ sonar_bridge_poc/
 
 ## Build and Run
 
-### One-time setup (Ubuntu)
-
+**One-time setup (Ubuntu):**
 ```bash
-sudo apt install build-essential libvulkan1 vulkan-tools
-curl https://sh.rustup.rs -sSf | sh
+sudo apt install -y build-essential libvulkan1 vulkan-tools
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source ~/.cargo/env
+```
 
-Run the demo:
-# Full build + all tests in one command
+**Run:**
+```bash
 bash build_and_run.sh
-
-# Or manually:
-cargo build --release
-cargo run --release
 ```
 
 ---
@@ -135,11 +157,6 @@ Sonar compute usage:        < 1% of frame budget
 
 ## Gazebo Lifecycle Test
 ```bash
-g++ -std=c++17 -O2 -o gazebo_plugin_test \
-    gazebo_plugin/SonarPlugin.cpp \
-    -L./target/release -lsonar_engine \
-    -Wl,-rpath,./target/release -ldl -lpthread -lm
-
 ./gazebo_plugin_test
 ```
 ```
@@ -155,22 +172,20 @@ g++ -std=c++17 -O2 -o gazebo_plugin_test \
 [SonarPlugin::Unload] GPU context released.
 ```
 
-Tick 1 is slower (GPU pipeline JIT compilation).
-Ticks 2-5 are steady state — this is the real per-frame cost in production.
+Tick 1 slower = GPU pipeline JIT compilation. Ticks 2-5 = production steady state.
 
 ---
 
 ## Current Shader Physics
 
-Each GPU thread handles one sonar ray independently (`global_invocation_id`).
+Each GPU thread = one sonar ray (`global_invocation_id`).
 
 **180-degree sonar fan:**
 ```wgsl
 let angle = (f32(idx) / f32(params.num_rays)) * 3.14159265;
 ```
-Thread 0 = 0° (left), thread 511 = 90° (ahead), thread 1023 = 180° (right).
 
-**Sine-wave bathymetry floor** (not flat — produces varying per-ray distances):
+**Sine-wave bathymetry** (produces varying per-ray distances):
 ```wgsl
 let floor_at = params.floor_height
              + sin(pos_x * 0.3) * 2.0
@@ -182,52 +197,61 @@ let floor_at = params.floor_height
 let noise = fract(sin(f32(idx) * 127.1 + 311.7) * 43758.5453) * 0.02;
 ```
 
-**Output:**
-```
-rays[0]    = 23.97m  ← hit wavy terrain
-rays[511]  = 50.00m  ← max range, no hit
-rays[1023] = 50.01m  ← max range + noise
-```
+**Physics gap vs full NPS model** (`sonar_calculation_cuda.cu`):
 
-**Physics gap vs full model:**
-
-The current shader is missing the full acoustic model from
-`sonar_calculation_cuda.cu`:
-
-- Lambert backscatter: `I ∝ sqrt(μ · cos(θ))`
-- Propagation loss: `TL = (1/r²) · e^{-2αr}`
-- Frequency-domain echo summation
-- Beam-pattern correction (sinc `beamCorrector` matrix)
-- Inverse FFT converting spectral bins to range cells
+| Missing component | Formula |
+|---|---|
+| Lambert backscatter | `I ∝ sqrt(μ · cos(θ))` |
+| Propagation loss | `TL = (1/r²) · e^{-2αr}` |
+| Frequency-domain echo summation | spectral bin accumulation |
+| Beam-pattern correction | sinc `beamCorrector` matrix multiply |
+| Range cell conversion | inverse FFT (`cufftExecC2C` → Cooley-Tukey) |
 
 ---
 
 ## GSoC Deliverable — 4-Pass WGSL Pipeline
 
-The full GSoC work ports each stage of the NPS CUDA pipeline to
-vendor-agnostic WGSL compute shaders:
+Full GSoC work ports the NPS CUDA pipeline to vendor-agnostic WGSL:
 
-**Pass 1 — Lambert scatter kernel**
+**Pass 0 — 3D Volumetric Beam Projection**
+Upgrade current 2D horizontal fan to a full 3D cone.
+Each thread computes ray direction from azimuth + elevation indices:
+```
+dir = (cos(elev)·cos(az), sin(elev), cos(elev)·sin(az))
+dispatch: (beam_count/64, elev_count, 1)
+```
+Horizontal FOV and vertical FOV configurable via uniform params.
+
+**Pass 1 — Lambert scatter + propagation loss**
 Port of `sonar_calculation_cuda.cu` scatter kernel.
-Adds `sqrt(μ · cos(θ))` backscatter + `(1/r²) · e^{-2αr}` propagation loss.
-Input: depth image + normal image from Gazebo `DepthCameraSensor`.
+- Backscatter: `sqrt(μ · cos(θ))` where θ from Gazebo normal map
+- Propagation: `(1/r²) · e^{-2αr}` with absorption coeff α (salinity + frequency)
+- Input: depth image + normal image from Gazebo `DepthCameraSensor`
 
 **Pass 2 — Ray summation**
 Parallel column reduction porting `column_sums_reduce`.
-Sums ray contributions per beam across the aperture.
+Sums ray contributions per beam across aperture.
 
 **Pass 3 — Beam correction**
-Matrix multiply with pre-computed sinc `beamCorrector` matrix.
+Matrix multiply with pre-computed sinc `beamCorrector`.
 Port of `gpu_matrix_mult`. Loaded once at `Load()`, reused every frame.
 
 **Pass 4 — Batched FFT**
 Cooley-Tukey FFT replacing `cufftExecC2C`.
 Converts spectral bins to final sonar range-cell image.
 
-All input buffers (depth, normals, noise, reflectivity) accepted from
+All input buffers (depth, normals, noise, reflectivity) from
 Gazebo `DepthCameraSensor` into persistent `wgpu::Buffer`s —
-matching the single-allocation pattern the NPS host plugin already
-uses for `rand_image`, `window`, and `beamCorrector` in `Load()`.
+same single-allocation pattern as NPS host plugin
+(`rand_image`, `window`, `beamCorrector` in `Load()`).
+
+---
+
+## Project References
+
+- **Lifecycle validation:** [gazebosim/gz-sensors](https://github.com/gazebosim/gz-sensors) — `GpuLidarSensor.cc`
+- **Acoustic physics:** [nps_uw_multibeam_sonar](https://github.com/Field-Robotics-Lab/nps_uw_multibeam_sonar) — `sonar_calculation_cuda.cu`
+- **Compute pipeline:** [Learn wgpu](https://sotrh.github.io/learn-wgpu/) — compute shader resource management
 
 ---
 
