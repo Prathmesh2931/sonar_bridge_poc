@@ -60,24 +60,8 @@ acoustic physics processing — which is what the wgpu pipeline provides.
 
 ---
 
-## Architecture
-```
-C++ Host / Gazebo Plugin
-        │
-        │  sonar_engine_init()    ← Load()
-        │  sonar_engine_update()  ← Update()
-        │  sonar_engine_destroy() ← Unload()
-        ▼
-Rust FFI Layer  (src/lib.rs — SonarEngine struct)
-        ▼
-wgpu Compute Pipeline
-        ▼
-WGSL Shader  (shaders/sonar.wgsl)
-ray marching + sine-wave bathymetry + acoustic noise
-        ▼
-GPU — Vulkan (Linux) / Metal (macOS) / DX12 (Windows)
-Intel / NVIDIA / AMD — zero code changes between vendors
-```
+## Architecture & GPU Pipeline
+![Sonar engine architecture: C++ host → Rust/wgpu compute → vendor-agnostic GPU backend](image.png)
 
 ---
 
