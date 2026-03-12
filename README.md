@@ -105,6 +105,13 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source ~/.cargo/env
 ```
 
+**One-time setup (MacOSX AppleSilicon):**
+```bash
+brew install molten-vk vulkan-tools
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source ~/.cargo/env
+```
+
 **Run:**
 ```bash
 bash build_and_run.sh
