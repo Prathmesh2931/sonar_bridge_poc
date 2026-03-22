@@ -1,0 +1,64 @@
+warning: variable `S` should have a snake case name
+   --> src/physics_engine.rs:175:13
+    |
+175 |         let S  = wgpu::BufferUsages::STORAGE;
+    |             ^ help: convert the identifier to snake case (notice the capitalization): `s`
+    |
+    = note: `#[warn(non_snake_case)]` (part of `#[warn(nonstandard_style)]`) on by default
+
+warning: variable `CD` should have a snake case name
+   --> src/physics_engine.rs:176:13
+    |
+176 |         let CD = wgpu::BufferUsages::COPY_DST;
+    |             ^^ help: convert the identifier to snake case: `cd`
+
+warning: variable `CS` should have a snake case name
+   --> src/physics_engine.rs:177:13
+    |
+177 |         let CS = wgpu::BufferUsages::COPY_SRC;
+    |             ^^ help: convert the identifier to snake case (notice the capitalization): `cs`
+
+warning: variable `MR` should have a snake case name
+   --> src/physics_engine.rs:178:13
+    |
+178 |         let MR = wgpu::BufferUsages::MAP_READ;
+    |             ^^ help: convert the identifier to snake case: `mr`
+
+warning: `sonar_bridge_poc` (bin "sonar_bridge_poc") generated 4 warnings
+    Finished `release` profile [optimized] target(s) in 0.03s
+     Running `target/release/sonar_bridge_poc`
+=== sonar_bridge_poc — physics pipeline ===
+
+[sonar_physics] GPU: NVIDIA GeForce RTX 3050 6GB Laptop GPU (Vulkan)
+GPU: NVIDIA GeForce RTX 3050 6GB Laptop GPU (Vulkan)
+
+--- Stage 2: physics pipeline benchmark ---
+  warmup (shader JIT)...
+  warmup: 3.57 ms
+  avg over 10 runs: 3.001 ms/frame
+  @ 10 Hz budget (100ms): 3.0% used
+
+--- Stage 3: physical validation ---
+  range resolution : 0.000025 m/bin
+  expected bin     : 117  (10m floor, r = t·c/2B)
+  observed peak    : 117
+  ✓ PASS (diff=0)
+
+  beam 0 — first 10 range bins:
+    bin   0  r=0.0000m  I=5.0390e-10
+    bin   1  r=0.0000m  I=6.5933e-10
+    bin   2  r=0.0001m  I=5.2180e-10
+    bin   3  r=0.0001m  I=4.9880e-10
+    bin   4  r=0.0001m  I=8.8745e-10
+    bin   5  r=0.0001m  I=5.3631e-10
+    bin   6  r=0.0002m  I=5.6376e-10
+    bin   7  r=0.0002m  I=6.0921e-10
+    bin   8  r=0.0002m  I=5.6760e-10
+    bin   9  r=0.0002m  I=5.5945e-10
+
+  pipeline summary:
+    Pass 1 (Eq.14+Eq.8): 96×512 rays → 96×256 spectrum
+    Pass 2 (matmul W·P): 96×96 · 96×256
+    Pass 3 (FFT):        96 beams × 256-pt radix-2
+
+Done.
